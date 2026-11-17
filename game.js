@@ -110,8 +110,8 @@
   var steerInput = 0; // -1, 0, 1
   var wheelAngle = 0;
 
-  var speed = 0.016;
-  var maxSpeed = 0.052;
+  var speed = 0.009;
+  var maxSpeed = 0.028;
   var score = 0;
   var invincibleUntil = 0;
   var flashUntil = 0;
@@ -128,7 +128,7 @@
     playerPos = 0;
     playerVel = 0;
     wheelAngle = 0;
-    speed = 0.016;
+    speed = 0.009;
     score = 0;
     invincibleUntil = 0;
     flashUntil = 0;
@@ -243,14 +243,63 @@
     ctx.arc(W / 2 - playerPos * 40, HORIZON_Y - 46, 30, 0, Math.PI * 2);
     ctx.fill();
 
-    // uzak bina siluetleri (paralaks)
+    // İstanbul silueti (paralaks)
     ctx.fillStyle = '#1d2740';
     var shift = -playerPos * 24;
-    for (var i = -1; i <= 6; i++) {
-      var bx = i * 70 + shift * 1.5;
-      var bh = 30 + ((i * 37) % 50);
-      ctx.fillRect(bx, HORIZON_Y - bh, 44, bh);
+    var baseY = HORIZON_Y;
+
+    for (var i = -1; i <= 7; i++) {
+      var bx = i * 62 + shift * 1.5;
+      var bh = 20 + ((i * 37) % 36);
+      ctx.fillRect(bx, baseY - bh, 30, bh);
     }
+
+    drawMosque(W * 0.28 + shift * 1.1, baseY);
+    drawBridge(W * 0.78 + shift * 1.3, baseY, 0.85);
+  }
+
+  function drawMinaret(x, baseY, h) {
+    ctx.fillRect(x - 2.5, baseY - h, 5, h);
+    ctx.beginPath();
+    ctx.moveTo(x - 4, baseY - h);
+    ctx.lineTo(x, baseY - h - 11);
+    ctx.lineTo(x + 4, baseY - h);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawMosque(cx, baseY) {
+    ctx.beginPath();
+    ctx.arc(cx, baseY - 16, 15, Math.PI, 0);
+    ctx.fill();
+    ctx.fillRect(cx - 20, baseY - 16, 40, 16);
+    ctx.fillRect(cx - 1, baseY - 32, 2, 7);
+    drawMinaret(cx - 32, baseY, 46);
+    drawMinaret(cx + 32, baseY, 46);
+  }
+
+  function drawBridge(cx, baseY, scale) {
+    var towerH = 70 * scale;
+    var gap = 100 * scale;
+    ctx.save();
+    ctx.translate(cx, baseY);
+    ctx.fillRect(-gap / 2 - 4 * scale, -towerH, 8 * scale, towerH);
+    ctx.fillRect(gap / 2 - 4 * scale, -towerH, 8 * scale, towerH);
+    ctx.fillRect(-gap / 2 - 40 * scale, -10 * scale, gap + 80 * scale, 5 * scale);
+    ctx.strokeStyle = ctx.fillStyle;
+    ctx.lineWidth = 1.2 * scale;
+    for (var k = 0; k <= 4; k++) {
+      var dx = (-gap / 2 - 40 * scale) + (k / 4) * (gap + 80 * scale);
+      ctx.beginPath();
+      ctx.moveTo(-gap / 2, -towerH + 8 * scale);
+      ctx.lineTo(dx, -8 * scale);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(gap / 2, -towerH + 8 * scale);
+      ctx.lineTo(dx, -8 * scale);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function drawRoad() {
@@ -450,45 +499,154 @@
     ctx.fillRect(3, 22, 6, 20);
     ctx.restore();
 
-    // gösterge paneli / kaporta
+    // gösterge paneli / kaporta (Fluence tarzı gri-siyah plastik)
     var dashGrad = ctx.createLinearGradient(0, DASH_TOP_Y, 0, H);
-    dashGrad.addColorStop(0, '#1d1f24');
+    dashGrad.addColorStop(0, '#2b2e35');
     dashGrad.addColorStop(1, '#0c0d10');
     ctx.fillStyle = dashGrad;
     roundRect(-4, DASH_TOP_Y, W + 8, H - DASH_TOP_Y + 20, 18);
     ctx.fill();
 
-    // hız göstergesi
-    ctx.fillStyle = '#f6c21a';
-    ctx.font = 'bold 12px sans-serif';
-    ctx.textAlign = 'left';
-    var kmh = Math.floor((speed / maxSpeed) * 140);
-    ctx.fillText(kmh + ' km/s', 16, DASH_TOP_Y + 22);
+    // gümüş krom şerit (Fluence iç dekor çizgisi)
+    ctx.fillStyle = 'rgba(200,205,215,0.55)';
+    ctx.fillRect(0, DASH_TOP_Y + 4, W, 4);
 
-    // direksiyon
-    var wheelCx = W / 2;
-    var wheelCy = H - 6;
-    var wheelR = 46;
+    var wheelCx = W * 0.32;
+    var wheelCy = H + 2;
+    var wheelR = 50;
+
+    // gösterge küpesi (direksiyonun arkasında, hız ibresi)
+    var gaugeCx = wheelCx;
+    var gaugeCy = wheelCy - wheelR * 0.98;
+    var gaugeR = 32;
+    ctx.save();
+    ctx.fillStyle = '#0a0b0d';
+    ctx.beginPath();
+    ctx.arc(gaugeCx, gaugeCy, gaugeR, Math.PI, Math.PI * 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,205,215,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(gaugeCx, gaugeCy, gaugeR, Math.PI, Math.PI * 2);
+    ctx.stroke();
+    var kmh = Math.floor((speed / maxSpeed) * 140);
+    for (var tickI = 0; tickI <= 8; tickI++) {
+      var tickAng = Math.PI + (Math.PI / 8) * tickI;
+      ctx.strokeStyle = tickI % 2 === 0 ? '#f6c21a' : 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(gaugeCx + Math.cos(tickAng) * (gaugeR - 7), gaugeCy + Math.sin(tickAng) * (gaugeR - 7));
+      ctx.lineTo(gaugeCx + Math.cos(tickAng) * (gaugeR - 2), gaugeCy + Math.sin(tickAng) * (gaugeR - 2));
+      ctx.stroke();
+    }
+    var needleAng = Math.PI + Math.min(1, kmh / 140) * Math.PI;
+    ctx.strokeStyle = '#e8432f';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(gaugeCx, gaugeCy);
+    ctx.lineTo(gaugeCx + Math.cos(needleAng) * (gaugeR - 9), gaugeCy + Math.sin(needleAng) * (gaugeR - 9));
+    ctx.stroke();
+    ctx.fillStyle = '#f6c21a';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(kmh, gaugeCx, gaugeCy - 10);
+    ctx.restore();
+
+    // havalandırma kanalları (sol sütun + sağ üst)
+    function drawVent(vx, vy, vr) {
+      ctx.save();
+      ctx.fillStyle = '#1a1b1f';
+      ctx.beginPath();
+      ctx.ellipse(vx, vy, vr, vr * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(200,205,215,0.6)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1.5;
+      for (var vi = -2; vi <= 2; vi++) {
+        ctx.beginPath();
+        ctx.moveTo(vx - vr * 0.8, vy + vi * vr * 0.22);
+        ctx.lineTo(vx + vr * 0.8, vy + vi * vr * 0.22);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    drawVent(W * 0.86, DASH_TOP_Y + 16, 16);
+    drawVent(W * 0.08, DASH_TOP_Y + 20, 12);
+
+    // direksiyon (3 kollu, soldaki sürücü pozisyonu)
     ctx.save();
     ctx.translate(wheelCx, wheelCy);
     ctx.rotate(wheelAngle);
-    ctx.strokeStyle = '#2a2d33';
-    ctx.lineWidth = 10;
+    ctx.strokeStyle = '#1c1d20';
+    ctx.lineWidth = 13;
     ctx.beginPath();
     ctx.arc(0, 0, wheelR, Math.PI, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = '#b4122a';
+    ctx.strokeStyle = 'rgba(210,214,222,0.4)';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(0, 0, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#2a2d33';
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.moveTo(-wheelR, 0);
-    ctx.lineTo(-10, 0);
-    ctx.moveTo(wheelR, 0);
-    ctx.lineTo(10, 0);
+    ctx.arc(0, 0, wheelR + 6, Math.PI, Math.PI * 2);
     ctx.stroke();
+    // üç kol
+    ctx.strokeStyle = '#1c1d20';
+    ctx.lineWidth = 8;
+    [Math.PI * 1.15, Math.PI * 1.5, Math.PI * 1.85].forEach(function (a) {
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(a) * wheelR, Math.sin(a) * wheelR);
+      ctx.stroke();
+    });
+    // orta göbek + logo
+    ctx.fillStyle = '#15161a';
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(210,214,222,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.save();
+    ctx.rotate(Math.PI / 4);
+    ctx.strokeRect(-6, -6, 12, 12);
+    ctx.restore();
+    ctx.restore();
+
+    // direksiyonu tutan el + kol (GS forma kolu)
+    var handAngleBase = Math.PI * 1.22;
+    var hlx = Math.cos(handAngleBase) * wheelR * 0.92;
+    var hly = Math.sin(handAngleBase) * wheelR * 0.92;
+    var handX = wheelCx + (hlx * Math.cos(wheelAngle) - hly * Math.sin(wheelAngle));
+    var handY = wheelCy + (hlx * Math.sin(wheelAngle) + hly * Math.cos(wheelAngle));
+
+    ctx.save();
+    ctx.strokeStyle = '#e9ecef';
+    ctx.lineWidth = 22;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(W * 0.05, H + 30);
+    ctx.quadraticCurveTo(W * 0.1, DASH_TOP_Y + 40, handX, handY);
+    ctx.stroke();
+    ctx.strokeStyle = '#b4122a';
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.05, H + 30);
+    ctx.quadraticCurveTo(W * 0.1, DASH_TOP_Y + 55, handX - 2, handY + 6);
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+
+    ctx.fillStyle = '#d99a6c';
+    ctx.beginPath();
+    ctx.ellipse(handX, handY, 13, 10, wheelAngle + handAngleBase - Math.PI / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#b97b4e';
+    ctx.lineWidth = 1.5;
+    for (var fi = -1; fi <= 1; fi++) {
+      ctx.beginPath();
+      ctx.moveTo(handX + fi * 4, handY - 6);
+      ctx.lineTo(handX + fi * 4, handY - 11);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
