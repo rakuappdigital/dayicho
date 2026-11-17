@@ -6,10 +6,14 @@
   var W = canvas.width;
   var H = canvas.height;
 
-  var LANES = 3;
-  var LANE_W = W / LANES;
-  var PLAYER_W = 56;
-  var PLAYER_H = 92;
+  var HORIZON_Y = H * 0.34;
+  var DASH_TOP_Y = H * 0.80;
+  var ROAD_HALF_TOP = 10;
+  var ROAD_HALF_BOTTOM = W * 0.68;
+  var STEER_DAMP = 0.92;
+  var LANE_POS = [-0.55, 0, 0.55];
+  var NEAR_T = 0.97;
+  var HIT_RADIUS = 0.26;
 
   var startScreen = document.getElementById('startScreen');
   var gameOverScreen = document.getElementById('gameOverScreen');
@@ -38,7 +42,7 @@
   var best = parseInt(localStorage.getItem(BEST_KEY) || '0', 10) || 0;
   bestEl.textContent = 'EN İYİ: ' + best;
 
-  // ---- Audio (synth placeholder, gerçek müzik sonra gelecek) ----
+  // ---- Ses (sentez, yerleşik düdük/çarpma efektleri) ----
   var audioCtx = null;
   function getAudioCtx() {
     if (!audioCtx) {
@@ -77,105 +81,114 @@
     beep(90, 0.05, 0.35, 'sawtooth', 0.2);
   }
 
+  // ---- Perspektif yardımcıları ----
+  function roadHalfWidth(t) {
+    return ROAD_HALF_TOP + (ROAD_HALF_BOTTOM - ROAD_HALF_TOP) * t;
+  }
+
+  function screenYAt(t) {
+    var c = Math.pow(t, 1.5);
+    return HORIZON_Y + (DASH_TOP_Y - HORIZON_Y) * c;
+  }
+
+  function centerAt(t) {
+    return W / 2 - playerPos * roadHalfWidth(t) * STEER_DAMP;
+  }
+
+  function screenXAt(worldX, t) {
+    return centerAt(t) + worldX * roadHalfWidth(t);
+  }
+
+  function scaleAt(t) {
+    return 0.12 + 0.88 * t;
+  }
+
   // ---- Oyun durumu ----
   var state = 'idle'; // idle | playing | gameover
-  var playerLane = 1;
-  var playerX = laneCenter(playerLane);
-  var targetX = playerX;
-  var playerY = H - PLAYER_H - 24;
+  var playerPos = 0; // -1..1, yoldaki yatay konum
+  var playerVel = 0;
+  var steerInput = 0; // -1, 0, 1
+  var wheelAngle = 0;
 
-  var speed = 4.2;
-  var maxSpeed = 11;
-  var distance = 0;
+  var speed = 0.016;
+  var maxSpeed = 0.052;
   var score = 0;
   var invincibleUntil = 0;
   var flashUntil = 0;
 
   var obstacles = [];
   var powerups = [];
+  var poles = [];
   var spawnTimer = 0;
   var powerupTimer = 0;
-  var roadOffset = 0;
-
-  function laneCenter(lane) {
-    return lane * LANE_W + LANE_W / 2;
-  }
+  var poleTimer = 0;
+  var dashOffset = 0;
 
   function resetGame() {
-    playerLane = 1;
-    playerX = laneCenter(playerLane);
-    targetX = playerX;
-    speed = 4.2;
-    distance = 0;
+    playerPos = 0;
+    playerVel = 0;
+    wheelAngle = 0;
+    speed = 0.016;
     score = 0;
     invincibleUntil = 0;
     flashUntil = 0;
     obstacles = [];
     powerups = [];
+    poles = [];
     spawnTimer = 0;
-    powerupTimer = 60;
-    roadOffset = 0;
+    powerupTimer = 150;
+    poleTimer = 0;
+    dashOffset = 0;
   }
 
   var OBSTACLE_KINDS = ['car_blue', 'car_green', 'police', 'phone'];
 
   function spawnObstacle() {
-    var lane = Math.floor(Math.random() * LANES);
+    var lane = LANE_POS[Math.floor(Math.random() * LANE_POS.length)];
     var kind = OBSTACLE_KINDS[Math.floor(Math.random() * OBSTACLE_KINDS.length)];
-    obstacles.push({
-      lane: lane,
-      x: laneCenter(lane),
-      y: -120,
-      w: kind === 'phone' ? 40 : 56,
-      h: kind === 'phone' ? 40 : 92,
-      kind: kind
-    });
+    obstacles.push({ worldX: lane, t: 0, kind: kind, hit: false });
   }
 
   function spawnPowerup() {
-    var freeLanes = [];
-    for (var l = 0; l < LANES; l++) {
-      var blocked = obstacles.some(function (o) { return o.lane === l && o.y < 60; });
-      if (!blocked) freeLanes.push(l);
-    }
-    var lane = freeLanes.length > 0
-      ? freeLanes[Math.floor(Math.random() * freeLanes.length)]
-      : Math.floor(Math.random() * LANES);
-    powerups.push({
-      lane: lane,
-      x: laneCenter(lane),
-      y: -60,
-      r: 20
+    var freeLanes = LANE_POS.filter(function (lx) {
+      return !obstacles.some(function (o) { return o.worldX === lx && o.t < 0.3; });
     });
+    var pool = freeLanes.length > 0 ? freeLanes : LANE_POS;
+    var lane = pool[Math.floor(Math.random() * pool.length)];
+    powerups.push({ worldX: lane, t: 0, taken: false });
+  }
+
+  function spawnPole(side) {
+    poles.push({ worldX: side, t: 0 });
   }
 
   // ---- Girdi ----
-  var keys = {};
   window.addEventListener('keydown', function (e) {
-    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') moveLane(-1);
-    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') moveLane(1);
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') steerInput = -1;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') steerInput = 1;
     if (e.key === ' ' || e.key === 'Enter') {
       if (state === 'idle') startGame();
       else if (state === 'gameover') startGame();
     }
   });
+  window.addEventListener('keyup', function (e) {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { if (steerInput < 0) steerInput = 0; }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { if (steerInput > 0) steerInput = 0; }
+  });
 
-  function moveLane(dir) {
-    if (state !== 'playing') return;
-    playerLane = Math.max(0, Math.min(LANES - 1, playerLane + dir));
-    targetX = laneCenter(playerLane);
+  function setTouchSteer(clientX, rect) {
+    var relX = (clientX - rect.left) / rect.width;
+    steerInput = relX < 0.5 ? -1 : 1;
   }
 
-  var touchStartX = null;
   canvas.addEventListener('touchstart', function (e) {
-    touchStartX = e.touches[0].clientX;
+    setTouchSteer(e.touches[0].clientX, canvas.getBoundingClientRect());
   }, { passive: true });
-  canvas.addEventListener('touchend', function (e) {
-    if (touchStartX === null) return;
-    var dx = e.changedTouches[0].clientX - touchStartX;
-    if (dx > 30) moveLane(1);
-    else if (dx < -30) moveLane(-1);
-    touchStartX = null;
+  canvas.addEventListener('touchmove', function (e) {
+    setTouchSteer(e.touches[0].clientX, canvas.getBoundingClientRect());
+  }, { passive: true });
+  canvas.addEventListener('touchend', function () {
+    steerInput = 0;
   }, { passive: true });
 
   startBtn.addEventListener('click', startGame);
@@ -207,34 +220,6 @@
   }
 
   // ---- Çizim yardımcıları ----
-  function drawRoad() {
-    ctx.fillStyle = '#2b2b33';
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 2;
-    for (var l = 1; l < LANES; l++) {
-      var x = l * LANE_W;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
-    }
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-    ctx.lineWidth = 4;
-    ctx.setLineDash([24, 20]);
-    ctx.lineDashOffset = -roadOffset;
-    for (var ll = 1; ll < LANES; ll++) {
-      var xx = ll * LANE_W;
-      ctx.beginPath();
-      ctx.moveTo(xx, 0);
-      ctx.lineTo(xx, H);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-  }
-
   function roundRect(x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -245,109 +230,144 @@
     ctx.closePath();
   }
 
-  function drawPlayer() {
-    var x = playerX;
-    var y = playerY;
-    var w = PLAYER_W;
-    var h = PLAYER_H;
-    var blinking = Date.now() < invincibleUntil && Math.floor(Date.now() / 80) % 2 === 0;
-    if (blinking) ctx.globalAlpha = 0.4;
+  function drawSky() {
+    var grad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
+    grad.addColorStop(0, '#2a3a63');
+    grad.addColorStop(1, '#8fa7c9');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, HORIZON_Y);
 
-    // gövde (Fluence - gri/gümüş sedan)
-    ctx.fillStyle = '#d7d9de';
-    roundRect(x - w / 2, y - h / 2, w, h, 14);
-    ctx.fill();
-    ctx.strokeStyle = '#9ba0ab';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // cam / ön
-    ctx.fillStyle = '#3a4a5c';
-    roundRect(x - w / 2 + 6, y - h / 2 + 10, w - 12, h * 0.4, 8);
+    // güneş
+    ctx.fillStyle = 'rgba(246, 194, 26, 0.85)';
+    ctx.beginPath();
+    ctx.arc(W / 2 - playerPos * 40, HORIZON_Y - 46, 30, 0, Math.PI * 2);
     ctx.fill();
 
-    // GS atkısı sürücünün boynunda
-    ctx.fillStyle = '#f6c21a';
-    ctx.fillRect(x - 14, y - h / 2 + 18, 28, 6);
-    ctx.fillStyle = '#b4122a';
-    ctx.fillRect(x - 14, y - h / 2 + 24, 28, 4);
-
-    // yüz (gerçek foto)
-    var faceR = 16;
-    if (faceImg.complete && faceImg.naturalWidth > 0) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y - h / 2 + 14, faceR, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(faceImg, x - faceR, y - h / 2 + 14 - faceR, faceR * 2, faceR * 2);
-      ctx.restore();
+    // uzak bina siluetleri (paralaks)
+    ctx.fillStyle = '#1d2740';
+    var shift = -playerPos * 24;
+    for (var i = -1; i <= 6; i++) {
+      var bx = i * 70 + shift * 1.5;
+      var bh = 30 + ((i * 37) % 50);
+      ctx.fillRect(bx, HORIZON_Y - bh, 44, bh);
     }
-
-    // rasta saçları (sarı-kırmızı-yeşil örgüler)
-    var dreadColors = ['#f6c21a', '#b4122a', '#2e8b3a', '#1a1a1a'];
-    var cx = x;
-    var cy = y - h / 2 + 14;
-    for (var i = 0; i < 7; i++) {
-      var ang = (Math.PI / 7) * i - Math.PI * 0.1;
-      var dx = Math.cos(ang - Math.PI / 2) * faceR;
-      var dy = Math.sin(ang - Math.PI / 2) * faceR;
-      ctx.strokeStyle = dreadColors[i % dreadColors.length];
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(cx + dx * 0.7, cy + dy * 0.7);
-      ctx.lineTo(cx + dx * 1.6, cy + dy * 1.6 - 4);
-      ctx.stroke();
-    }
-
-    // arka tamponlar / tekerlek izleri
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(x - w / 2 - 3, y - h / 2 + 10, 5, 18);
-    ctx.fillRect(x + w / 2 - 2, y - h / 2 + 10, 5, 18);
-    ctx.fillRect(x - w / 2 - 3, y + h / 2 - 28, 5, 18);
-    ctx.fillRect(x + w / 2 - 2, y + h / 2 - 28, 5, 18);
-
-    ctx.globalAlpha = 1;
   }
 
-  function drawObstacle(o) {
-    ctx.save();
-    ctx.translate(o.x, o.y);
-    if (o.kind === 'phone') {
-      ctx.fillStyle = '#ffffff';
-      roundRect(-o.w / 2, -o.h / 2, o.w, o.h, 8);
-      ctx.fill();
-      ctx.fillStyle = '#25d366';
+  function drawRoad() {
+    var steps = 24;
+    var left = [];
+    var right = [];
+    var i, t, y, hw, cx;
+    for (i = 0; i <= steps; i++) {
+      t = i / steps;
+      y = screenYAt(t);
+      hw = roadHalfWidth(t);
+      cx = centerAt(t);
+      left.push([cx - hw, y]);
+      right.push([cx + hw, y]);
+    }
+
+    // kenar banketleri (yeşil/toprak)
+    ctx.fillStyle = '#3f6b3f';
+    ctx.fillRect(0, HORIZON_Y, W, DASH_TOP_Y - HORIZON_Y);
+
+    // yol zemini
+    ctx.fillStyle = '#3a3d46';
+    ctx.beginPath();
+    ctx.moveTo(left[0][0], left[0][1]);
+    for (i = 1; i <= steps; i++) ctx.lineTo(left[i][0], left[i][1]);
+    for (i = steps; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+    ctx.closePath();
+    ctx.fill();
+
+    // şerit çizgileri (noktalı, kayan)
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 2;
+    [-0.275, 0.275].forEach(function (laneLine) {
+      ctx.setLineDash([10, 14]);
+      ctx.lineDashOffset = -dashOffset;
       ctx.beginPath();
-      ctx.arc(0, -4, 10, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#333';
-      ctx.font = 'bold 10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('EŞİN', 0, 16);
-    } else {
-      var color = o.kind === 'police' ? '#1c2a4a' : (o.kind === 'car_green' ? '#2e6b3a' : '#2f5f9e');
-      ctx.fillStyle = color;
-      roundRect(-o.w / 2, -o.h / 2, o.w, o.h, 14);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      roundRect(-o.w / 2 + 6, -o.h / 2 + 10, o.w - 12, o.h * 0.4, 8);
-      ctx.fill();
-      if (o.kind === 'police') {
-        var flash = Math.floor(Date.now() / 150) % 2 === 0;
-        ctx.fillStyle = flash ? '#ff2b2b' : '#2b6bff';
-        ctx.fillRect(-10, -o.h / 2 - 6, 20, 8);
+      for (i = 0; i <= steps; i++) {
+        t = i / steps;
+        var x = screenXAt(laneLine, t);
+        var yy = screenYAt(t);
+        if (i === 0) ctx.moveTo(x, yy);
+        else ctx.lineTo(x, yy);
       }
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+
+  function drawPole(p) {
+    var t = p.t;
+    var y = screenYAt(t);
+    var s = scaleAt(t);
+    var x = screenXAt(p.worldX, t);
+    ctx.fillStyle = '#c94b3f';
+    ctx.fillRect(x - 3 * s, y - 40 * s, 6 * s, 40 * s);
+    ctx.fillStyle = '#f6c21a';
+    ctx.fillRect(x - 3 * s, y - 40 * s, 6 * s, 8 * s);
+  }
+
+  function drawCarSprite(x, y, s, bodyColor, flasher) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    roundRect(-24, -40, 48, 80, 12);
+    ctx.fillStyle = bodyColor;
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    roundRect(-18, -34, 36, 26, 6);
+    ctx.fill();
+    if (flasher) {
+      var on = Math.floor(Date.now() / 150) % 2 === 0;
+      ctx.fillStyle = on ? '#ff2b2b' : '#2b6bff';
+      ctx.fillRect(-9, -46, 18, 7);
     }
     ctx.restore();
   }
 
-  function drawPowerup(p) {
+  function drawPhoneSprite(x, y, s) {
     ctx.save();
-    ctx.translate(p.x, p.y);
-    var bob = Math.sin(Date.now() / 150 + p.x) * 3;
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    ctx.fillStyle = '#ffffff';
+    roundRect(-18, -24, 36, 48, 8);
+    ctx.fill();
+    ctx.fillStyle = '#25d366';
+    ctx.beginPath();
+    ctx.arc(0, -4, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('EŞİN', 0, 16);
+    ctx.restore();
+  }
+
+  function drawObstacle(o) {
+    var y = screenYAt(o.t);
+    var s = scaleAt(o.t);
+    var x = screenXAt(o.worldX, o.t);
+    if (o.kind === 'phone') {
+      drawPhoneSprite(x, y, s);
+    } else {
+      var color = o.kind === 'police' ? '#1c2a4a' : (o.kind === 'car_green' ? '#2e6b3a' : '#2f5f9e');
+      drawCarSprite(x, y, s, color, o.kind === 'police');
+    }
+  }
+
+  function drawPowerup(p) {
+    var y = screenYAt(p.t);
+    var s = scaleAt(p.t);
+    var x = screenXAt(p.worldX, p.t);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    var bob = Math.sin(Date.now() / 150 + p.worldX * 10) * 2;
     ctx.translate(0, bob);
-    ctx.rotate(Math.sin(Date.now() / 300) * 0.15);
+    ctx.rotate(Math.sin(Date.now() / 300) * 0.12);
     ctx.fillStyle = '#f6c21a';
     ctx.fillRect(-18, -8, 36, 16);
     ctx.fillStyle = '#b4122a';
@@ -356,74 +376,220 @@
     ctx.restore();
   }
 
-  function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-    return Math.abs(ax - bx) < (aw + bw) / 2 - 6 &&
-           Math.abs(ay - by) < (ah + bh) / 2 - 6;
+  function drawCockpit() {
+    // kaporta kenarları (A sütunları) - vinyet
+    var grad = ctx.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0, 'rgba(10,10,12,0.9)');
+    grad.addColorStop(0.12, 'rgba(10,10,12,0)');
+    grad.addColorStop(0.88, 'rgba(10,10,12,0)');
+    grad.addColorStop(1, 'rgba(10,10,12,0.9)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, DASH_TOP_Y);
+
+    // dikiz aynası
+    var mirrorW = 96;
+    var mirrorH = 34;
+    var mx = W / 2 - mirrorW / 2;
+    var my = 14;
+    ctx.fillStyle = '#15151a';
+    roundRect(mx - 6, my - 6, mirrorW + 12, mirrorH + 16, 10);
+    ctx.fill();
+    ctx.fillStyle = '#5b6b86';
+    roundRect(mx, my, mirrorW, mirrorH, 6);
+    ctx.fill();
+
+    ctx.save();
+    ctx.beginPath();
+    roundRect(mx, my, mirrorW, mirrorH, 6);
+    ctx.clip();
+    // ayna içinde arkadaki yol/trafik hissi (basit gri degrade)
+    ctx.fillStyle = '#434a55';
+    ctx.fillRect(mx, my, mirrorW, mirrorH);
+
+    var faceR = 14;
+    var fcx = mx + mirrorW / 2;
+    var fcy = my + mirrorH / 2 + 4;
+    if (faceImg.complete && faceImg.naturalWidth > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(fcx, fcy, faceR, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(faceImg, fcx - faceR, fcy - faceR, faceR * 2, faceR * 2);
+      ctx.restore();
+    }
+    var dreadColors = ['#f6c21a', '#b4122a', '#2e8b3a', '#1a1a1a'];
+    for (var i = 0; i < 6; i++) {
+      var ang = (Math.PI / 6) * i - Math.PI * 0.15;
+      var dx = Math.cos(ang - Math.PI / 2) * faceR;
+      var dy = Math.sin(ang - Math.PI / 2) * faceR;
+      ctx.strokeStyle = dreadColors[i % dreadColors.length];
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(fcx + dx * 0.7, fcy + dy * 0.7);
+      ctx.lineTo(fcx + dx * 1.5, fcy + dy * 1.5 - 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // aynadan sallanan GS atkısı
+    var swing = Math.sin(Date.now() / 500) * 0.3 + wheelAngle * 0.4;
+    ctx.save();
+    ctx.translate(W / 2, my + mirrorH + 6);
+    ctx.rotate(swing);
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, 22);
+    ctx.stroke();
+    ctx.fillStyle = '#f6c21a';
+    ctx.fillRect(-9, 22, 18, 20);
+    ctx.fillStyle = '#b4122a';
+    ctx.fillRect(-9, 22, 6, 20);
+    ctx.fillRect(3, 22, 6, 20);
+    ctx.restore();
+
+    // gösterge paneli / kaporta
+    var dashGrad = ctx.createLinearGradient(0, DASH_TOP_Y, 0, H);
+    dashGrad.addColorStop(0, '#1d1f24');
+    dashGrad.addColorStop(1, '#0c0d10');
+    ctx.fillStyle = dashGrad;
+    roundRect(-4, DASH_TOP_Y, W + 8, H - DASH_TOP_Y + 20, 18);
+    ctx.fill();
+
+    // hız göstergesi
+    ctx.fillStyle = '#f6c21a';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'left';
+    var kmh = Math.floor((speed / maxSpeed) * 140);
+    ctx.fillText(kmh + ' km/s', 16, DASH_TOP_Y + 22);
+
+    // direksiyon
+    var wheelCx = W / 2;
+    var wheelCy = H - 6;
+    var wheelR = 46;
+    ctx.save();
+    ctx.translate(wheelCx, wheelCy);
+    ctx.rotate(wheelAngle);
+    ctx.strokeStyle = '#2a2d33';
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.arc(0, 0, wheelR, Math.PI, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#b4122a';
+    ctx.beginPath();
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#2a2d33';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(-wheelR, 0);
+    ctx.lineTo(-10, 0);
+    ctx.moveTo(wheelR, 0);
+    ctx.lineTo(10, 0);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function rectHit(o) {
+    return Math.abs(o.worldX - playerPos) < HIT_RADIUS;
   }
 
   // ---- Güncelleme ----
   function update(dt) {
     if (state !== 'playing') return;
 
-    speed = Math.min(maxSpeed, speed + dt * 0.08);
-    distance += speed;
-    score += speed * 0.05;
-    roadOffset += speed;
+    speed = Math.min(maxSpeed, speed + dt * 0.00014);
+    score += speed * 60;
+    dashOffset += speed * 40;
 
-    playerX += (targetX - playerX) * Math.min(1, dt * 0.02);
+    playerVel += steerInput * dt * 0.09;
+    playerVel *= 0.9;
+    playerVel = Math.max(-0.045, Math.min(0.045, playerVel));
+    playerPos += playerVel * dt;
+    playerPos = Math.max(-0.92, Math.min(0.92, playerPos));
+    wheelAngle += ((steerInput * 0.5) - wheelAngle) * Math.min(1, dt * 0.2);
 
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
       spawnObstacle();
-      spawnTimer = Math.max(28, 70 - speed * 3);
+      spawnTimer = Math.max(26, 60 - speed * 500);
     }
 
     powerupTimer -= dt;
     if (powerupTimer <= 0) {
       spawnPowerup();
-      powerupTimer = 180 + Math.random() * 120;
+      powerupTimer = 160 + Math.random() * 110;
     }
 
-    for (var i = obstacles.length - 1; i >= 0; i--) {
-      var o = obstacles[i];
-      o.y += speed;
-      if (o.y > H + 100) {
+    poleTimer -= dt;
+    if (poleTimer <= 0) {
+      spawnPole(-1.15);
+      spawnPole(1.15);
+      poleTimer = 22;
+    }
+
+    var i, o, p;
+    for (i = obstacles.length - 1; i >= 0; i--) {
+      o = obstacles[i];
+      o.t += speed * dt;
+      if (o.t > 1.1) {
         obstacles.splice(i, 1);
         continue;
       }
-      if (Date.now() >= invincibleUntil &&
-          rectsOverlap(playerX, playerY, PLAYER_W, PLAYER_H, o.x, o.y, o.w, o.h)) {
+      if (!o.hit && o.t >= NEAR_T && Date.now() >= invincibleUntil && rectHit(o)) {
         endGame();
         return;
       }
     }
 
-    for (var j = powerups.length - 1; j >= 0; j--) {
-      var p = powerups[j];
-      p.y += speed;
-      if (p.y > H + 60) {
-        powerups.splice(j, 1);
+    for (i = powerups.length - 1; i >= 0; i--) {
+      p = powerups[i];
+      p.t += speed * dt;
+      if (p.t > 1.1) {
+        powerups.splice(i, 1);
         continue;
       }
-      if (rectsOverlap(playerX, playerY, PLAYER_W, PLAYER_H, p.x, p.y, p.r * 2, p.r * 2)) {
-        powerups.splice(j, 1);
+      if (!p.taken && p.t >= NEAR_T - 0.05 && rectHit(p)) {
+        p.taken = true;
+        powerups.splice(i, 1);
         score += 50;
         invincibleUntil = Date.now() + 1500;
         flashUntil = Date.now() + 350;
         playPowerupJingle();
       }
     }
+
+    for (i = poles.length - 1; i >= 0; i--) {
+      poles[i].t += speed * dt;
+      if (poles[i].t > 1.1) poles.splice(i, 1);
+    }
   }
 
+  function byDepthAsc(a, b) { return a.t - b.t; }
+
   function draw() {
+    drawSky();
     drawRoad();
-    for (var i = 0; i < obstacles.length; i++) drawObstacle(obstacles[i]);
-    for (var j = 0; j < powerups.length; j++) drawPowerup(powerups[j]);
-    if (state === 'playing' || state === 'gameover') drawPlayer();
+
+    var scene = [];
+    poles.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawPole(x); } }); });
+    obstacles.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawObstacle(x); } }); });
+    powerups.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawPowerup(x); } }); });
+    scene.sort(byDepthAsc);
+    scene.forEach(function (it) { it.draw(); });
+
+    drawCockpit();
 
     if (Date.now() < flashUntil) {
-      ctx.fillStyle = 'rgba(246, 194, 26, 0.25)';
+      ctx.fillStyle = 'rgba(246, 194, 26, 0.22)';
       ctx.fillRect(0, 0, W, H);
+    }
+    if (Date.now() < invincibleUntil && Math.floor(Date.now() / 90) % 2 === 0) {
+      ctx.strokeStyle = 'rgba(246, 194, 26, 0.6)';
+      ctx.lineWidth = 8;
+      ctx.strokeRect(4, 4, W - 8, H - 8);
     }
 
     scoreEl.textContent = 'PUAN: ' + Math.floor(score);
