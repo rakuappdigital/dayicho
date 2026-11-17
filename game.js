@@ -6,13 +6,16 @@
   var W = canvas.width;
   var H = canvas.height;
 
-  var HORIZON_Y = H * 0.34;
-  var DASH_TOP_Y = H * 0.80;
-  var ROAD_HALF_TOP = 10;
-  var ROAD_HALF_BOTTOM = W * 0.68;
-  var STEER_DAMP = 0.92;
+  var HORIZON_Y = H * 0.5;
+  var DASH_TOP_Y = H * 0.82;
+  var CAM_DEPTH = 0.86; // ~100° görüş açısı
+  var CAM_HEIGHT = 0.45;
+  var ROAD_EDGE = 1.35;
   var LANE_POS = [-0.55, 0, 0.55];
-  var NEAR_T = 0.97;
+  var Z_FAR = 22;
+  var Z_NEAR = 0.6;
+  var Z_HIT = 0.75;
+  var Z_REMOVE = 0.15;
   var HIT_RADIUS = 0.26;
 
   var startScreen = document.getElementById('startScreen');
@@ -81,26 +84,19 @@
     beep(90, 0.05, 0.35, 'sawtooth', 0.2);
   }
 
-  // ---- Perspektif yardımcıları ----
-  function roadHalfWidth(t) {
-    return ROAD_HALF_TOP + (ROAD_HALF_BOTTOM - ROAD_HALF_TOP) * t;
+  // ---- Perspektif yardımcıları (gerçek kamera projeksiyonu: sabit kamera
+  // yüksekliği + görüş derinliği, ufuk ekranın tam ortasında - Outrun/Traffic
+  // Rider tarzı pseudo-3D yol motorlarındaki standart yöntem) ----
+  function scaleAtZ(z) {
+    return CAM_DEPTH / z;
   }
 
-  function screenYAt(t) {
-    var c = Math.pow(t, 1.5);
-    return HORIZON_Y + (DASH_TOP_Y - HORIZON_Y) * c;
+  function screenYAtZ(z) {
+    return HORIZON_Y + scaleAtZ(z) * CAM_HEIGHT * HORIZON_Y;
   }
 
-  function centerAt(t) {
-    return W / 2 - playerPos * roadHalfWidth(t) * STEER_DAMP;
-  }
-
-  function screenXAt(worldX, t) {
-    return centerAt(t) + worldX * roadHalfWidth(t);
-  }
-
-  function scaleAt(t) {
-    return 0.12 + 0.88 * t;
+  function screenXAtZ(worldX, z) {
+    return W / 2 + scaleAtZ(z) * (worldX - playerPos) * (W / 2);
   }
 
   // ---- Oyun durumu ----
@@ -110,8 +106,8 @@
   var steerInput = 0; // -1, 0, 1
   var wheelAngle = 0;
 
-  var speed = 0.009;
-  var maxSpeed = 0.028;
+  var speed = 0.095;
+  var maxSpeed = 0.22;
   var score = 0;
   var invincibleUntil = 0;
   var flashUntil = 0;
@@ -128,7 +124,7 @@
     playerPos = 0;
     playerVel = 0;
     wheelAngle = 0;
-    speed = 0.009;
+    speed = 0.095;
     score = 0;
     invincibleUntil = 0;
     flashUntil = 0;
@@ -146,20 +142,20 @@
   function spawnObstacle() {
     var lane = LANE_POS[Math.floor(Math.random() * LANE_POS.length)];
     var kind = OBSTACLE_KINDS[Math.floor(Math.random() * OBSTACLE_KINDS.length)];
-    obstacles.push({ worldX: lane, t: 0, kind: kind, hit: false });
+    obstacles.push({ worldX: lane, z: Z_FAR, kind: kind, hit: false });
   }
 
   function spawnPowerup() {
     var freeLanes = LANE_POS.filter(function (lx) {
-      return !obstacles.some(function (o) { return o.worldX === lx && o.t < 0.3; });
+      return !obstacles.some(function (o) { return o.worldX === lx && o.z > Z_FAR * 0.7; });
     });
     var pool = freeLanes.length > 0 ? freeLanes : LANE_POS;
     var lane = pool[Math.floor(Math.random() * pool.length)];
-    powerups.push({ worldX: lane, t: 0, taken: false });
+    powerups.push({ worldX: lane, z: Z_FAR, taken: false });
   }
 
   function spawnPole(side) {
-    poles.push({ worldX: side, t: 0 });
+    poles.push({ worldX: side, z: Z_FAR });
   }
 
   // ---- Girdi ----
@@ -302,25 +298,30 @@
     ctx.restore();
   }
 
+  function zAtStep(i, steps) {
+    var t = i / steps;
+    return Z_FAR * Math.pow(Z_NEAR / Z_FAR, t);
+  }
+
   function drawRoad() {
-    var steps = 24;
+    var steps = 32;
     var left = [];
     var right = [];
-    var i, t, y, hw, cx;
+    var i, z, y, x0, x1;
     for (i = 0; i <= steps; i++) {
-      t = i / steps;
-      y = screenYAt(t);
-      hw = roadHalfWidth(t);
-      cx = centerAt(t);
-      left.push([cx - hw, y]);
-      right.push([cx + hw, y]);
+      z = zAtStep(i, steps);
+      y = screenYAtZ(z);
+      x0 = screenXAtZ(-ROAD_EDGE, z);
+      x1 = screenXAtZ(ROAD_EDGE, z);
+      left.push([x0, y]);
+      right.push([x1, y]);
     }
 
     // kenar banketleri (yeşil/toprak)
     ctx.fillStyle = '#3f6b3f';
     ctx.fillRect(0, HORIZON_Y, W, DASH_TOP_Y - HORIZON_Y);
 
-    // yol zemini
+    // yol zemini (ufuktan sonuna kadar tek düz asfalt, aşırı perspektif yok)
     ctx.fillStyle = '#3a3d46';
     ctx.beginPath();
     ctx.moveTo(left[0][0], left[0][1]);
@@ -332,14 +333,14 @@
     // şerit çizgileri (noktalı, kayan)
     ctx.strokeStyle = 'rgba(255,255,255,0.75)';
     ctx.lineWidth = 2;
-    [-0.275, 0.275].forEach(function (laneLine) {
+    [-0.33, 0.33].forEach(function (laneLine) {
       ctx.setLineDash([10, 14]);
       ctx.lineDashOffset = -dashOffset;
       ctx.beginPath();
       for (i = 0; i <= steps; i++) {
-        t = i / steps;
-        var x = screenXAt(laneLine, t);
-        var yy = screenYAt(t);
+        z = zAtStep(i, steps);
+        var x = screenXAtZ(laneLine, z);
+        var yy = screenYAtZ(z);
         if (i === 0) ctx.moveTo(x, yy);
         else ctx.lineTo(x, yy);
       }
@@ -349,10 +350,9 @@
   }
 
   function drawPole(p) {
-    var t = p.t;
-    var y = screenYAt(t);
-    var s = scaleAt(t);
-    var x = screenXAt(p.worldX, t);
+    var y = screenYAtZ(p.z);
+    var s = scaleAtZ(p.z);
+    var x = screenXAtZ(p.worldX, p.z);
     ctx.fillStyle = '#c94b3f';
     ctx.fillRect(x - 3 * s, y - 40 * s, 6 * s, 40 * s);
     ctx.fillStyle = '#f6c21a';
@@ -396,9 +396,9 @@
   }
 
   function drawObstacle(o) {
-    var y = screenYAt(o.t);
-    var s = scaleAt(o.t);
-    var x = screenXAt(o.worldX, o.t);
+    var y = screenYAtZ(o.z);
+    var s = scaleAtZ(o.z);
+    var x = screenXAtZ(o.worldX, o.z);
     if (o.kind === 'phone') {
       drawPhoneSprite(x, y, s);
     } else {
@@ -408,9 +408,9 @@
   }
 
   function drawPowerup(p) {
-    var y = screenYAt(p.t);
-    var s = scaleAt(p.t);
-    var x = screenXAt(p.worldX, p.t);
+    var y = screenYAtZ(p.z);
+    var s = scaleAtZ(p.z);
+    var x = screenXAtZ(p.worldX, p.z);
     ctx.save();
     ctx.translate(x, y);
     ctx.scale(s, s);
@@ -658,9 +658,9 @@
   function update(dt) {
     if (state !== 'playing') return;
 
-    speed = Math.min(maxSpeed, speed + dt * 0.00014);
-    score += speed * 60;
-    dashOffset += speed * 40;
+    speed = Math.min(maxSpeed, speed + dt * 0.0010);
+    score += speed * 6;
+    dashOffset += speed * 4;
 
     playerVel += steerInput * dt * 0.09;
     playerVel *= 0.9;
@@ -672,7 +672,7 @@
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
       spawnObstacle();
-      spawnTimer = Math.max(26, 60 - speed * 500);
+      spawnTimer = Math.max(26, 60 - speed * 140);
     }
 
     powerupTimer -= dt;
@@ -683,20 +683,20 @@
 
     poleTimer -= dt;
     if (poleTimer <= 0) {
-      spawnPole(-1.15);
-      spawnPole(1.15);
+      spawnPole(-1.5);
+      spawnPole(1.5);
       poleTimer = 22;
     }
 
     var i, o, p;
     for (i = obstacles.length - 1; i >= 0; i--) {
       o = obstacles[i];
-      o.t += speed * dt;
-      if (o.t > 1.1) {
+      o.z -= speed * dt;
+      if (o.z < Z_REMOVE) {
         obstacles.splice(i, 1);
         continue;
       }
-      if (!o.hit && o.t >= NEAR_T && Date.now() >= invincibleUntil && rectHit(o)) {
+      if (!o.hit && o.z <= Z_HIT && Date.now() >= invincibleUntil && rectHit(o)) {
         endGame();
         return;
       }
@@ -704,12 +704,12 @@
 
     for (i = powerups.length - 1; i >= 0; i--) {
       p = powerups[i];
-      p.t += speed * dt;
-      if (p.t > 1.1) {
+      p.z -= speed * dt;
+      if (p.z < Z_REMOVE) {
         powerups.splice(i, 1);
         continue;
       }
-      if (!p.taken && p.t >= NEAR_T - 0.05 && rectHit(p)) {
+      if (!p.taken && p.z <= Z_HIT + 0.1 && rectHit(p)) {
         p.taken = true;
         powerups.splice(i, 1);
         score += 50;
@@ -720,22 +720,22 @@
     }
 
     for (i = poles.length - 1; i >= 0; i--) {
-      poles[i].t += speed * dt;
-      if (poles[i].t > 1.1) poles.splice(i, 1);
+      poles[i].z -= speed * dt;
+      if (poles[i].z < Z_REMOVE) poles.splice(i, 1);
     }
   }
 
-  function byDepthAsc(a, b) { return a.t - b.t; }
+  function byDepthDesc(a, b) { return b.z - a.z; }
 
   function draw() {
     drawSky();
     drawRoad();
 
     var scene = [];
-    poles.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawPole(x); } }); });
-    obstacles.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawObstacle(x); } }); });
-    powerups.forEach(function (x) { scene.push({ t: x.t, draw: function () { drawPowerup(x); } }); });
-    scene.sort(byDepthAsc);
+    poles.forEach(function (x) { scene.push({ z: x.z, draw: function () { drawPole(x); } }); });
+    obstacles.forEach(function (x) { scene.push({ z: x.z, draw: function () { drawObstacle(x); } }); });
+    powerups.forEach(function (x) { scene.push({ z: x.z, draw: function () { drawPowerup(x); } }); });
+    scene.sort(byDepthDesc);
     scene.forEach(function (it) { it.draw(); });
 
     drawCockpit();
